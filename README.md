@@ -575,3 +575,51 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
+
+---
+
+## Project status (2026)
+
+**This repository is archived.** GitHub marks it read-only, so it accepts no new branches and no
+pull requests. The public deployment the links above point to (`api.panatrans.org`) no longer
+resolves in DNS, and `test-panatrans.herokuapp.com` is not guaranteed to answer either. The stack is
+Rails 4.2 on Ruby 2.2.2 (2016).
+
+### What the dataset actually contains
+
+Documenting this saves the next person days of guessing, because the GTFS feed does not behave the
+way a reader of the GTFS reference would assume:
+
+| Element | Reality in the Panatrans feed |
+|---|---|
+| `shapes.txt` | Complete: 138,417 points for 345 routes. |
+| `stops.txt` | 1,150 stops with coordinates. |
+| `stop_times.txt` | **`arrival_time` and `departure_time` are empty strings.** There is no time of arrival at any stop, so no ETA per stop can be derived from this feed. |
+| `trips.txt` | One trip per route, so there is no frequency data either. |
+| Service hours | They live in the **`route_desc` text** of `routes.txt` (`Horario Hábil / Sábado / Domingo` plus windows such as `04:00 - 24:00`, `24 Horas` or `-` for no service). |
+| `route_short_name` | It repeats `route_long_name`; it is not a bus number. |
+| `calendar.txt` | Declares service until 2050, so validity has to be judged by the feed's date (2020), not by the calendar. |
+
+### API specification
+
+`openapi.yaml` documents the v1 API as OpenAPI 3.0.3. It was written by reading `config/routes.rb`,
+the controllers in `app/controllers/v1/` and the `app/views/v1/**/*.json.jbuilder` templates, so the
+field names match what the server actually renders rather than what this README promised — for
+example `/v1/routes/{id}` renders `stop_sequences` for each trip while `/v1/trips/{id}` renders the
+same content under the key `stop_times`, and `distance` in `/v1/stops/nearby` is a string, not a
+number. The document validates with `openapi-spec-validator` 0.9.0.
+
+Two behaviours worth knowing before building a client on top:
+
+* `GET /v1/stops` returns all 1,150 stops, unordered by distance and unpaginated. Prefer
+  `/v1/stops/nearby/?lat=&lon=&radius=` for clients, or sync and cache locally.
+* `/v1/{routes|trips|stops|stop_sequences}/since/{seconds}` is the incremental export: it returns only
+  the rows whose `updated_at` is at or after the given Unix timestamp, which is how a client is meant
+  to keep a local copy without downloading the whole network.
+
+### A modern implementation of the same idea
+
+`mibus.gbautomations.com` is a maintained, dependency-free (Python standard library + SQLite +
+Leaflet) implementation of this same dataset, including the service-window parsing described above.
+It exists because this API is archived, and it is offered as a reference for anyone reviving the
+project: https://mibus.gbautomations.com
