@@ -1,0 +1,439 @@
+openapi: 3.0.3
+info:
+  title: Panatrans API
+  version: 1.1.0-beta
+  description: |
+    API JSON del sistema de transporte público de la Ciudad de Panamá (proyecto Panatrans).
+
+    Esta especificación se escribió leyendo el código de `config/routes.rb`, los controladores de
+    `app/controllers/v1/` y las vistas `app/views/v1/**/*.json.jbuilder` del repositorio, de modo que
+    los nombres de campo y los parámetros coinciden con lo que el servidor devuelve realmente y no con
+    lo que el README prometía en 2016.
+
+    Todas las respuestas usan un sobre común: `status` (`success`, `fail` o `error`) y, según el caso,
+    `data` o `errors`. Los errores de validación llegan con HTTP 422; el modo de solo lectura devuelve
+    403 en las escrituras.
+
+    Notas de estado del proyecto:
+      * El repositorio está archivado y la instalación pública
+        (`api.panatrans.org`) ya no resuelve en DNS.
+      * El feed de datos está congelado desde 2020.
+      * En ese feed `stop_times` viene con `arrival_time` y `departure_time` **vacíos**, así que la API
+        nunca ha devuelto horas de paso por parada. La ventana de servicio real está en el texto de
+        `route_desc` del GTFS.
+  license:
+    name: MIT
+    url: https://github.com/merlos/panatrans-api/blob/master/config/routes.rb
+servers:
+  - url: http://localhost:3000
+    description: Instancia local (`rails server`)
+  - url: https://test-panatrans.herokuapp.com
+    description: Servidor de pruebas citado en el README (histórico, sin garantía de disponibilidad)
+
+tags:
+  - name: Rutas
+  - name: Paradas
+  - name: Viajes
+  - name: Secuencias de paradas
+  - name: Trayectos
+  - name: Saldo
+  - name: Sincronización incremental
+
+paths:
+  /v1/routes:
+    get:
+      tags: [Rutas]
+      summary: Lista de rutas
+      parameters:
+        - $ref: '#/components/parameters/prettify'
+        - name: with_trips
+          in: query
+          description: Incluye los viajes (`trips`) de cada ruta.
+          schema: { type: boolean, default: false }
+      responses:
+        '200':
+          description: Rutas ordenadas por nombre
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Sobre'
+                  - type: object
+                    properties:
+                      data:
+                        type: array
+                        items: { $ref: '#/components/schemas/RutaResumen' }
+    post:
+      tags: [Rutas]
+      summary: Crea una ruta
+      description: Devuelve 403 si la instancia está en modo de solo lectura.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                route:
+                  type: object
+                  properties:
+                    long_name: { type: string }
+                    short_name: { type: string }
+                    url: { type: string }
+      responses:
+        '201': { description: Ruta creada }
+        '403': { description: Modo de solo lectura }
+        '422': { description: 'Error de validación, con `errors` en el cuerpo' }
+
+  /v1/routes/{id}:
+    get:
+      tags: [Rutas]
+      summary: Detalle de una ruta con sus viajes y paradas
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: integer, format: int64 }
+        - $ref: '#/components/parameters/prettify'
+        - name: without_shapes
+          in: query
+          description: Omite el bloque `shape` de cada viaje (respuestas mucho más pequeñas).
+          schema: { type: boolean, default: false }
+      responses:
+        '200':
+          description: Ruta con viajes, secuencias de paradas y trayecto
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Sobre'
+                  - type: object
+                    properties:
+                      data: { $ref: '#/components/schemas/RutaDetalle' }
+
+  /v1/stops:
+    get:
+      tags: [Paradas]
+      summary: Lista completa de paradas
+      description: |
+        Devuelve todas las paradas ordenadas por nombre, sin paginar ni filtrar. Con el feed de 2020
+        son 1.150 paradas en una sola respuesta: para clientes móviles conviene usar
+        `/v1/stops/nearby/` o sincronizar y cachear.
+      parameters:
+        - $ref: '#/components/parameters/prettify'
+      responses:
+        '200':
+          description: Paradas ordenadas por nombre
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Sobre'
+                  - type: object
+                    properties:
+                      data:
+                        type: array
+                        items: { $ref: '#/components/schemas/Parada' }
+            application/vnd.google-earth.kml+xml:
+              schema: { type: string, description: Exportación KML (formato `kml`) }
+            application/gpx+xml:
+              schema: { type: string, description: Exportación GPX (formato `gpx`) }
+
+  /v1/stops/nearby:
+    get:
+      tags: [Paradas]
+      summary: Paradas dentro de un radio
+      description: |
+        Devuelve las paradas a menos de `radius` metros del punto indicado, ordenadas por cercanía.
+        El radio por defecto es de 2.000 m y no hay tope de resultados. El campo `distance` viaja como
+        texto redondeado a metros enteros.
+      parameters:
+        - name: lat
+          in: query
+          required: true
+          schema: { type: number, format: double }
+        - name: lon
+          in: query
+          required: true
+          schema: { type: number, format: double }
+        - name: radius
+          in: query
+          description: Radio en metros. Por defecto 2000.
+          schema: { type: integer, default: 2000 }
+        - $ref: '#/components/parameters/prettify'
+      responses:
+        '200':
+          description: Paradas cercanas con su distancia en metros
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Sobre'
+                  - type: object
+                    properties:
+                      data:
+                        type: array
+                        items:
+                          allOf:
+                            - $ref: '#/components/schemas/Parada'
+                            - type: object
+                              properties:
+                                distance: { type: string, example: '348' }
+
+  /v1/stops/{id}:
+    get:
+      tags: [Paradas]
+      summary: Detalle de una parada
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: integer, format: int64 }
+        - $ref: '#/components/parameters/prettify'
+        - name: with_stop_sequences
+          in: query
+          description: Incluye las secuencias de parada (qué viajes paran aquí y en qué orden).
+          schema: { type: boolean, default: false }
+      responses:
+        '200':
+          description: Parada, opcionalmente con sus secuencias
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Sobre'
+                  - type: object
+                    properties:
+                      data: { $ref: '#/components/schemas/Parada' }
+
+  /v1/trips/{id}:
+    get:
+      tags: [Viajes]
+      summary: Detalle de un viaje
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: integer, format: int64 }
+        - $ref: '#/components/parameters/prettify'
+        - name: with_shape
+          in: query
+          description: Incluye los puntos del trayecto.
+          schema: { type: boolean, default: false }
+      responses:
+        '200':
+          description: Viaje con su ruta y sus paradas ordenadas
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Sobre'
+                  - type: object
+                    properties:
+                      data: { $ref: '#/components/schemas/ViajeDetalle' }
+
+  /v1/stop_sequences:
+    get:
+      tags: [Secuencias de paradas]
+      summary: Lista de secuencias de parada
+      parameters:
+        - $ref: '#/components/parameters/prettify'
+      responses:
+        '200':
+          description: Secuencias de parada
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Sobre'
+                  - type: object
+                    properties:
+                      data:
+                        type: array
+                        items: { $ref: '#/components/schemas/SecuenciaParada' }
+
+  /v1/shapes/{io_id}:
+    get:
+      tags: [Trayectos]
+      summary: Puntos de un trayecto
+      parameters:
+        - name: io_id
+          in: path
+          required: true
+          description: Identificador del trayecto (`shape_id`).
+          schema: { type: string }
+        - $ref: '#/components/parameters/prettify'
+      responses:
+        '200':
+          description: Puntos ordenados del trayecto
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Sobre'
+                  - type: object
+                    properties:
+                      data:
+                        type: object
+                        properties:
+                          points:
+                            type: array
+                            items: { $ref: '#/components/schemas/PuntoTrayecto' }
+
+  /v1/balance/{id}:
+    get:
+      tags: [Saldo]
+      summary: Consulta de saldo de la tarjeta Metrobús
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: integer, format: int64 }
+        - $ref: '#/components/parameters/prettify'
+      responses:
+        '200': { description: Saldo asociado al identificador }
+        '404': { description: Identificador desconocido }
+
+  /v1/{recurso}/since/{segundos}:
+    get:
+      tags: [Sincronización incremental]
+      summary: Registros modificados desde una marca de tiempo
+      description: |
+        Exporta los registros de `routes`, `trips`, `stops` o `stop_sequences` cuyo `updated_at` es
+        mayor o igual que la marca indicada. Es el mecanismo pensado para que un cliente mantenga su
+        copia local sin descargar la red entera. También acepta `format=csv`.
+      parameters:
+        - name: recurso
+          in: path
+          required: true
+          schema:
+            type: string
+            enum: [routes, trips, stops, stop_sequences]
+        - name: segundos
+          in: path
+          required: true
+          description: Marca temporal en segundos desde la época Unix.
+          schema: { type: integer, format: int64, example: 1465171200 }
+      responses:
+        '200':
+          description: Registros modificados desde la marca
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Sobre' }
+            text/csv:
+              schema: { type: string }
+        '404':
+          description: Recurso desconocido
+
+components:
+  parameters:
+    prettify:
+      name: prettify
+      in: query
+      description: Devuelve el JSON indentado para lectura humana.
+      schema: { type: boolean, default: false }
+
+  schemas:
+    Sobre:
+      type: object
+      required: [status]
+      properties:
+        status:
+          type: string
+          enum: [success, fail, error]
+        data:
+          description: Presente cuando `status` es `success`.
+        errors:
+          description: Presente cuando `status` es `fail`.
+
+    Parada:
+      type: object
+      properties:
+        id: { type: integer, format: int64 }
+        name: { type: string }
+        lat: { type: number, format: double }
+        lon: { type: number, format: double }
+
+    RutaResumen:
+      type: object
+      properties:
+        id: { type: integer, format: int64 }
+        url: { type: string, nullable: true }
+        name: { type: string, description: Campo `long_name` del GTFS }
+        trips:
+          type: array
+          description: Solo si se pidió `with_trips=true`.
+          items: { $ref: '#/components/schemas/ViajeResumen' }
+
+    RutaDetalle:
+      type: object
+      properties:
+        id: { type: integer, format: int64 }
+        url: { type: string, nullable: true }
+        name: { type: string }
+        trips:
+          type: array
+          items: { $ref: '#/components/schemas/ViajeDetalle' }
+
+    ViajeResumen:
+      type: object
+      properties:
+        id: { type: integer, format: int64 }
+        headsign: { type: string }
+        direction: { type: string, nullable: true }
+
+    ViajeDetalle:
+      type: object
+      properties:
+        id: { type: integer, format: int64 }
+        headsign: { type: string }
+        direction: { type: string, nullable: true }
+        route:
+          type: object
+          description: Presente en `/v1/trips/{id}`.
+          properties:
+            id: { type: integer, format: int64 }
+            url: { type: string, nullable: true }
+            name: { type: string, description: Campo `short_name` del GTFS }
+        stop_sequences:
+          type: array
+          description: Paradas del viaje en orden.
+          items: { $ref: '#/components/schemas/SecuenciaConParada' }
+        stop_times:
+          type: array
+          description: Mismo contenido que `stop_sequences`, con el nombre que usa `/v1/trips/{id}`.
+          items: { $ref: '#/components/schemas/SecuenciaConParada' }
+        shape:
+          description: Puntos del trayecto; objeto `{shape_id, points}` en rutas y arreglo en viajes.
+          oneOf:
+            - type: object
+              properties:
+                shape_id: { type: string }
+                points:
+                  type: array
+                  items: { $ref: '#/components/schemas/PuntoTrayecto' }
+            - type: array
+              items: { $ref: '#/components/schemas/PuntoTrayecto' }
+
+    SecuenciaParada:
+      type: object
+      properties:
+        id: { type: integer, format: int64 }
+        stop_id: { type: integer, format: int64 }
+        trip_id: { type: integer, format: int64 }
+        sequence: { type: integer }
+
+    SecuenciaConParada:
+      type: object
+      properties:
+        id: { type: integer, format: int64 }
+        sequence: { type: integer }
+        stop: { $ref: '#/components/schemas/Parada' }
+
+    PuntoTrayecto:
+      type: object
+      properties:
+        id: { type: integer, format: int64 }
+        pt_lat: { type: number, format: double }
+        pt_lon: { type: number, format: double }
+        pt_sequence: { type: integer }
